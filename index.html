@@ -193,6 +193,86 @@
     transition: border-color 0.15s, color 0.15s;
   }
   #flipBtn:hover { border-color: var(--accent); color: var(--text); }
+
+  /* ── Capture button ── */
+  #captureBtn {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    background: transparent;
+    border: 4px solid #fff;
+    cursor: pointer;
+    z-index: 5;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.1s;
+  }
+  #captureBtn::after {
+    content: '';
+    width: 50px; height: 50px;
+    border-radius: 50%;
+    background: #fff;
+    display: block;
+    transition: background 0.1s, transform 0.1s;
+  }
+  #captureBtn:active { transform: translateX(-50%) scale(0.92); }
+  #captureBtn:active::after { background: var(--accent); }
+
+  /* ── Freeze overlay ── */
+  #freezeBar {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: none;
+    align-items: center;
+    gap: 10px;
+    background: rgba(22,33,62,0.92);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 14px;
+    z-index: 6;
+    white-space: nowrap;
+  }
+  #freezeBar button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-family: inherit;
+    font-size: 0.72rem;
+    cursor: pointer;
+    letter-spacing: 0.04em;
+    transition: border-color 0.15s;
+  }
+  #freezeBar button:hover { border-color: var(--accent2); }
+  #saveBtn {
+    background: var(--accent2) !important;
+    border-color: var(--accent2) !important;
+    color: #1a1a2e !important;
+    font-weight: 700 !important;
+  }
+  #saveBtn:hover { opacity: 0.85; }
+
+  /* flash */
+  .flash {
+    position: absolute;
+    inset: 0;
+    background: #fff;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 20;
+    animation: flash 0.35s ease-out forwards;
+  }
+  @keyframes flash {
+    0%   { opacity: 0.7; }
+    100% { opacity: 0; }
+  }
 </style>
 </head>
 <body>
@@ -217,6 +297,16 @@
   </div>
   <canvas id="out"></canvas>
   <video id="vid" autoplay playsinline muted style="display:none"></video>
+
+  <!-- shutter button -->
+  <button id="captureBtn" aria-label="Capture"></button>
+
+  <!-- freeze controls -->
+  <div id="freezeBar">
+    <span style="font-size:0.72rem;color:var(--muted);letter-spacing:0.06em">FROZEN</span>
+    <button id="saveBtn">⬇ Save</button>
+    <button id="resumeBtn">▶ Resume</button>
+  </div>
 </div>
 
 <footer>
@@ -276,11 +366,16 @@ const beadCount  = document.getElementById('beadCount');
 const paletteRow = document.getElementById('paletteRow');
 const flipBtn    = document.getElementById('flipBtn');
 const beadIcon   = document.getElementById('beadIcon');
+const captureBtn = document.getElementById('captureBtn');
+const freezeBar  = document.getElementById('freezeBar');
+const saveBtn    = document.getElementById('saveBtn');
+const resumeBtn  = document.getElementById('resumeBtn');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let animId = null;
 let flipped = true;
 let gridCols = 50;
+let frozen = false;
 
 // ── Bead icon decoration ──────────────────────────────────────────────────────
 const iconColors = ['#e94560','#f5a623','#00e5ff','#76ff03','#bf00ff','#ffd700','#ff69b4','#00ff41','#ff6347'];
@@ -338,6 +433,7 @@ const sctx = scratch.getContext('2d', { willReadFrequently: true });
 
 // ── Render one frame ──────────────────────────────────────────────────────────
 function renderFrame() {
+  if (frozen) return;
   if (video.readyState < 2) { animId = requestAnimationFrame(renderFrame); return; }
 
   const vw = video.videoWidth  || 640;
@@ -428,6 +524,7 @@ startBtn.addEventListener('click', async () => {
     video.srcObject = stream;
     video.play();
     overlay.style.display = 'none';
+    captureBtn.style.display = 'flex';
     if (animId) cancelAnimationFrame(animId);
     renderFrame();
   } catch (e) {
@@ -437,6 +534,96 @@ startBtn.addEventListener('click', async () => {
 });
 
 flipBtn.addEventListener('click', () => { flipped = !flipped; });
+
+// ── Capture ────────────────────────────────────────────────────────────────
+captureBtn.addEventListener('click', () => {
+  frozen = true;
+  // flash effect
+  const fl = document.createElement('div');
+  fl.className = 'flash';
+  canvas.parentElement.appendChild(fl);
+  setTimeout(() => fl.remove(), 400);
+
+  captureBtn.style.display = 'none';
+  freezeBar.style.display = 'flex';
+  flipBtn.disabled = true;
+});
+
+resumeBtn.addEventListener('click', () => {
+  frozen = false;
+  freezeBar.style.display = 'none';
+  captureBtn.style.display = 'flex';
+  flipBtn.disabled = false;
+  renderFrame();
+});
+
+saveBtn.addEventListener('click', () => {
+  // render at 2× resolution for a nicer saved image
+  const vw = video.videoWidth  || 640;
+  const vh = video.videoHeight || 480;
+  const aspect = vw / vh;
+  const cols = gridCols;
+  const rows = Math.round(cols / aspect);
+  const bpx  = 16; // fixed bead size for export
+  const gap  = 1;
+  const r2   = Math.floor((bpx - gap) / 2);
+
+  const exp = document.createElement('canvas');
+  exp.width  = cols * bpx;
+  exp.height = rows * bpx;
+  const ectx = exp.getContext('2d');
+
+  // re-downsample current video frame
+  const sc2 = document.createElement('canvas');
+  sc2.width = cols; sc2.height = rows;
+  const sc2ctx = sc2.getContext('2d', { willReadFrequently: true });
+  if (flipped) {
+    sc2ctx.save();
+    sc2ctx.translate(cols, 0);
+    sc2ctx.scale(-1, 1);
+    sc2ctx.drawImage(video, 0, 0, cols, rows);
+    sc2ctx.restore();
+  } else {
+    sc2ctx.drawImage(video, 0, 0, cols, rows);
+  }
+  const imgData = sc2ctx.getImageData(0, 0, cols, rows).data;
+
+  ectx.fillStyle = '#1a1a2e';
+  ectx.fillRect(0, 0, exp.width, exp.height);
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const i = (row * cols + col) * 4;
+      const hex = nearestColor(imgData[i], imgData[i+1], imgData[i+2]);
+      const cx = col * bpx + Math.floor(bpx / 2);
+      const cy = row * bpx + Math.floor(bpx / 2);
+
+      ectx.beginPath();
+      ectx.arc(cx, cy, r2, 0, Math.PI * 2);
+      ectx.fillStyle = hex;
+      ectx.fill();
+
+      const grd = ectx.createRadialGradient(cx - r2*0.3, cy - r2*0.3, r2*0.05, cx, cy, r2);
+      grd.addColorStop(0,    'rgba(255,255,255,0.55)');
+      grd.addColorStop(0.45, 'rgba(255,255,255,0.08)');
+      grd.addColorStop(1,    'rgba(0,0,0,0.25)');
+      ectx.beginPath();
+      ectx.arc(cx, cy, r2, 0, Math.PI * 2);
+      ectx.fillStyle = grd;
+      ectx.fill();
+
+      ectx.beginPath();
+      ectx.arc(cx, cy, r2 * 0.2, 0, Math.PI * 2);
+      ectx.fillStyle = 'rgba(0,0,0,0.35)';
+      ectx.fill();
+    }
+  }
+
+  const a = document.createElement('a');
+  a.download = `perler-${Date.now()}.png`;
+  a.href = exp.toDataURL('image/png');
+  a.click();
+});
 </script>
 </body>
 </html>
